@@ -1,3 +1,4 @@
+from grom import assert_exhaustive_enum
 from grom.scanner import Lexeme, LexemeType
 from tests.common import check_scanning, check_scanning_lexemes
 
@@ -59,6 +60,7 @@ def test_basic_scanning():
         Lexeme(5, 10, lines[5], 'testing', 81, 'EOF', LexemeType.EOF),
     ]
     check_scanning_lexemes(data, expected)
+    assert_exhaustive_enum(LexemeType, 5)
 
 
 def test_token_splitting_input():

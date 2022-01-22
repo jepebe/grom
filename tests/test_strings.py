@@ -10,11 +10,11 @@ def test_double_quote_string():
     check_scanning(data, expected)
 
 
-def test_double_inside_double_quote_string_no_space():
+def test_double_inside_double_quote_string_raises():
     data = """\"hello,"world!\""""
     expected = ['"hello,"', "world", "!", '"', "EOF"]
 
-    with pytest.raises(UserWarning):
+    with pytest.raises(SystemExit):
         check_scanning(data, expected)
 
 

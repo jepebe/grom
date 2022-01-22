@@ -1,6 +1,9 @@
+import sys
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Optional
+
+from grom import assert_exhaustive_enum
 
 
 class LexemeType(Enum):
@@ -22,62 +25,36 @@ class Lexeme:
     type: LexemeType = LexemeType.DEFAULT
 
 
-def token_error(lexeme, message, at_end=False, ignore_errors=False):
+def compiler_error(lexeme, message, at_end=False):
     """
     Print an error to screen with an indicator pointing to the exact lexeme
 
     Parameters
     ----------
     lexeme: Lexeme
+        the lexeme object to use as a reference for source location
     message: str
+        message to print as part of the error
     at_end: bool
-    ignore_errors: bool
+        move the error pointer to the end of the lexeme
     """
-    print(f"Error encountered at line {lexeme.line_number + 1} in file {lexeme.file}")
-    print(f"{lexeme.line.rstrip()}")
-    skip = lexeme.col + len(lexeme.value) + 1 if at_end else lexeme.col
-    print(f'{" " * skip}^')
-    print(f"./{lexeme.file}:{lexeme.line_number + 1}:{lexeme.col + 1}: {message}")
-    print()
+    skip = lexeme.col + len(lexeme.value) + 1 if at_end else lexeme.col  # pos of ^
+    lines = [
+        f"Error encountered at line {lexeme.line_number + 1} in file {lexeme.file}",
+        f"{lexeme.line.rstrip()}",
+        f'{" " * skip}^',
+        f"./{lexeme.file}:{lexeme.line_number + 1}:{lexeme.col + 1}: ERROR: {message}",
+    ]
 
-    if not ignore_errors:
-        raise UserWarning("token error")
-        # sys.exit(1)
+    print('\n'.join(lines), file=sys.stderr)
 
-
-# def is_alpha(c):
-#     return ord("a") <= ord(c) <= ord("z") or ord("A") <= ord(c) <= ord("Z")
-#
-#
-# def is_digit(c):
-#     return ord("0") <= ord(c) <= ord("9")
-#
-#
-# def is_alphanum(c):
-#     return is_alpha(c) or is_digit(c)
-
-
-def is_comment(c):
-    return c == "#"
-
-
-def is_grouping(c):
-    return c in "()[]{},:"
-
-
-# def is_symbol(c):
-#     return c in ".,:;@*^-+=&%$!/<>|?"
-
-
-def is_string_terminator(c):
-    return c == '"'
+    exit(1)
 
 
 class Scanner:
-    def __init__(self, path, data, ignore_errors=False):
+    def __init__(self, path, data):
         self._path: str = path
         self._data: str = data
-        self._ignore_errors: bool = ignore_errors
         self._line_number: int = 0
         self._line_start = 0
         self._column: int = 0
@@ -162,30 +139,15 @@ class Scanner:
     def eof_marker(self):
         return self._create_marker("EOF", LexemeType.EOF)
 
-    # def consume_number(self):
-    #     self.mark()
-    #     while self.can_peek() and (is_digit(self.peek()) or self.peek() == "."):
-    #         self.advance()
-    #     self.advance()
-
     def consume_comment(self):
         # Will consume line until newline has been consumed
         while not self.at_end() and self.current_character() != "\n":
             self.advance()
 
-    # def consume_symbol(self):
-    #     # merge single operators
-    #     # TODO: make sure this is what we want, e.g. ?!%& is legal
-    #     self.mark()
-    #     if is_symbol(self.current_character()):
-    #         while self.can_peek() and is_symbol(self.peek()):
-    #             self.advance()
-    #     self.advance()
-
     def consume_string(self):
         self.mark()
 
-        while self.can_peek() and not is_string_terminator(self.peek()):
+        while self.can_peek() and not self.peek() == '"':
             if self.peek() == "\\":
                 self.advance()  # TODO: safe to skip escape character?
                 # check escaped character
@@ -199,7 +161,7 @@ class Scanner:
         self.advance()
 
         if self.at_end():
-            token_error(self.create_lexeme(), "unterminated string")
+            self.char_error("unterminated string")
 
         self.advance()
 
@@ -211,8 +173,14 @@ class Scanner:
         idx = self._index
         return Lexeme(lno, col, line, self._path, index=idx, value=name)
 
+    def scanner_error(self, message):
+        compiler_error(self.create_lexeme(), message)
 
-def scanner(path, ignore_errors=False, data=None):
+    def char_error(self, message):
+        compiler_error(self.character_marker('"'), message)
+
+
+def scanner(path, data=None):
     """
     Scans a `grom` source and generates Lexemes
 
@@ -220,10 +188,6 @@ def scanner(path, ignore_errors=False, data=None):
     ----------
     path: str
         Path to a file containing `grom` source or a name if data is provided
-
-    ignore_errors: bool
-        Enabling this will keep outputting error to stdout instead of stopping at the
-        first error encountered.
 
     data: str
         source of a `grom` program in `str` form.
@@ -237,52 +201,47 @@ def scanner(path, ignore_errors=False, data=None):
         with open(path, "r") as f:
             data = f.read()
 
-    scn = Scanner(path, data, ignore_errors=ignore_errors)
+    scn = Scanner(path, data)
+    assert_exhaustive_enum(LexemeType, 5)
 
     while not scn.at_end():
         c = scn.current_character()
 
-        if c == "\n":
-            if scn.is_marked():
+        match c:
+            case '\n':
+                # newline
+                if scn.is_marked():
+                    yield scn.create_lexeme()
+                yield scn.eol_marker()
+                scn.newline()
+            case '#':
+                # comment
+                if scn.is_marked():
+                    yield scn.create_lexeme()
+                scn.consume_comment()
+            case '(' | ')' | '[' | ']' | '{' | '}' | ',' | ':':
+                # grouping
+                if scn.is_marked():
+                    yield scn.create_lexeme()
+                scn.mark()
+                scn.advance()
+                yield scn.create_lexeme(LexemeType.GROUPING)
+            case '"':
+                # string
+                if scn.is_marked():
+                    scn.char_error("misplaced string terminator")
+                scn.consume_string()
+                yield scn.create_lexeme(LexemeType.STRING)
+            case char if not char.isspace() and not scn.is_marked():
+                # start a lexeme
+                scn.mark()
+                scn.advance()
+            case char if char.isspace() and scn.is_marked():
+                # finish current lexeme
                 yield scn.create_lexeme()
-            yield scn.eol_marker()
-            scn.newline()
-
-        elif is_comment(c):
-            if scn.is_marked():
-                yield scn.create_lexeme()
-            scn.consume_comment()
-
-        # elif is_digit(c) and not scn.is_marked():
-        #     # number
-        #     scn.consume_number()
-        #     yield scn.create_lexeme()
-
-        elif is_grouping(c):
-            # grouping and operators
-            if scn.is_marked():
-                yield scn.create_lexeme()
-            # scn.consume_symbol()
-            scn.mark()
-            scn.advance()
-            yield scn.create_lexeme(LexemeType.GROUPING)
-
-        elif is_string_terminator(c):
-            if scn.is_marked():
-                token_error(scn.character_marker('"'), "misplaced string terminator")
-            scn.consume_string()
-            yield scn.create_lexeme(LexemeType.STRING)
-
-        elif not c.isspace() and not scn.is_marked():
-            # start a lexeme
-            scn.mark()
-            scn.advance()
-        elif c.isspace() and scn.is_marked():
-            # finish lexeme
-            yield scn.create_lexeme()
-            scn.advance()
-        else:
-            scn.advance()
+                scn.advance()
+            case _:
+                scn.advance()
 
     if scn.is_marked():
         yield scn.create_lexeme()
